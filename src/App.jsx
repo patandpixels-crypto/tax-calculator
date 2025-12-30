@@ -1,73 +1,159 @@
-import React, { useState, useEffect } from 'react';
-import { Plus, Trash2, Download, Image, Upload } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react'; // Import React core plus hooks for state, side-effects, and memoized calculations
+import { Download, Image as ImageIcon, Trash2, Upload } from 'lucide-react'; // Import icons for UI buttons
 
-export default function SMSIncomeTracker() {
-  const [smsText, setSmsText] = useState('');
-  const [transactions, setTransactions] = useState([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState('');
-  const [success, setSuccess] = useState('');
-  const [isProcessingImage, setIsProcessingImage] = useState(false);
-  const [selectedImage, setSelectedImage] = useState(null);
-  const [showDebitPopup, setShowDebitPopup] = useState(false);
-  const [userName, setUserName] = useState('');
-  const [showNameInput, setShowNameInput] = useState(false);
-  const [tempName, setTempName] = useState('');
+// Define the progressive Nigerian income tax brackets required by the brief
+const TAX_BRACKETS = [
+  { limit: 800000, rate: 0 }, // First ₦800,000 is tax free
+  { limit: 3000000, rate: 0.15 }, // Next ₦2,200,000 taxed at 15%
+  { limit: 12000000, rate: 0.18 }, // Next ₦9,000,000 taxed at 18%
+  { limit: 25000000, rate: 0.21 }, // Next ₦13,000,000 taxed at 21%
+  { limit: 50000000, rate: 0.23 }, // Next ₦25,000,000 taxed at 23%
+  { limit: Infinity, rate: 0.25 }, // Income above ₦50,000,000 taxed at 25%
+];
 
+// Define core debit keywords for quick rejection
+const CRITICAL_DEBIT_KEYWORDS = ['debit', 'dr'];
+
+// Define additional debit keywords for fallback detection
+const DEBIT_KEYWORDS = [
+  'debited',
+  'withdrawal',
+  'withdraw',
+  'transferred',
+  'transfer from your',
+  'payment to',
+  'paid to',
+  'sent to',
+  'deducted',
+  'charged',
+  'purchase',
+  'atm withdrawal',
+  'pos purchase',
+  'bill payment',
+];
+
+// Define credit keywords to ensure SMS indicates incoming funds
+const CREDIT_KEYWORDS = [
+  'credited',
+  'credit',
+  'received',
+  'deposit',
+  'transfer from',
+  'payment from',
+  'salary',
+  'refund',
+  'reversal',
+];
+
+// Preload common Nigerian bank names for quick tagging
+const BANK_NAMES = ['GTBank', 'Access', 'Zenith', 'First Bank', 'UBA', 'Stanbic', 'Kuda', 'Fidelity', 'Wema', 'Union'];
+
+// Utility to safely access the storage API while falling back to localStorage
+const storage = {
+  // Retrieve a value using either window.storage or browser localStorage
+  async get(key) {
+    if (window.storage?.get) {
+      return window.storage.get(key);
+    }
+    const value = localStorage.getItem(key);
+    return value ? { value } : null;
+  },
+  // Save a value using either window.storage or browser localStorage
+  async set(key, value) {
+    if (window.storage?.set) {
+      return window.storage.set(key, value);
+    }
+    localStorage.setItem(key, value);
+  },
+};
+
+export default function App() {
+  const [smsText, setSmsText] = useState(''); // Holds manually pasted or OCR-extracted SMS text
+  const [transactions, setTransactions] = useState([]); // Stores accepted income transactions
+  const [userName, setUserName] = useState(''); // Saved user name for sender/receiver detection
+  const [tempName, setTempName] = useState(''); // Buffer for editing the user name
+  const [selectedImage, setSelectedImage] = useState(null); // Object URL for uploaded screenshot preview
+  const [isProcessingImage, setIsProcessingImage] = useState(false); // Flag for OCR request state
+  const [showNameInput, setShowNameInput] = useState(false); // Controls profile modal visibility
+  const [showDebitPopup, setShowDebitPopup] = useState(false); // Controls debit alert modal visibility
+  const [error, setError] = useState(''); // Error feedback banner text
+  const [success, setSuccess] = useState(''); // Success feedback banner text
+
+  // Load stored data once on mount
   useEffect(() => {
     loadTransactions();
     loadUserName();
   }, []);
 
+  // Fetch persisted transactions from storage
   async function loadTransactions() {
     try {
-      const result = await window.storage.get('income-transactions');
-      if (result && result.value) {
-        setTransactions(JSON.parse(result.value));
+      const stored = await storage.get('income-transactions');
+      if (stored?.value) {
+        setTransactions(JSON.parse(stored.value));
       }
     } catch (err) {
-      console.log('No existing transactions found');
-    } finally {
-      setIsLoading(false);
+      console.error('Failed to load transactions', err);
     }
   }
 
+  // Fetch saved user name from storage
   async function loadUserName() {
     try {
-      const result = await window.storage.get('user-name');
-      if (result && result.value) {
-        setUserName(result.value);
-        setTempName(result.value);
+      const stored = await storage.get('user-name');
+      if (stored?.value) {
+        setUserName(stored.value);
+        setTempName(stored.value);
       }
     } catch (err) {
-      console.log('No user name found');
+      console.error('Failed to load user name', err);
     }
   }
 
+  // Persist the provided transactions list
+  async function persistTransactions(next) {
+    await storage.set('income-transactions', JSON.stringify(next));
+  }
+
+  // Persist the user's name for sender/receiver checks
   async function saveUserName() {
     try {
-      await window.storage.set('user-name', tempName);
-      setUserName(tempName);
+      await storage.set('user-name', tempName.trim());
+      setUserName(tempName.trim());
       setShowNameInput(false);
-      setSuccess('✅ Name saved successfully!');
-      setTimeout(() => setSuccess(''), 3000);
+      flashSuccess('Name saved successfully');
     } catch (err) {
-      setError('Failed to save name: ' + err.message);
+      flashError(`Failed to save name: ${err.message}`);
     }
   }
 
-  async function saveTransactions(updatedTransactions) {
-    try {
-      await window.storage.set('income-transactions', JSON.stringify(updatedTransactions));
-    } catch (err) {
-      setError('Failed to save transactions: ' + err.message);
-    }
+  // Helper to show success feedback briefly
+  function flashSuccess(message) {
+    setSuccess(message);
+    setTimeout(() => setSuccess(''), 3500);
   }
 
+  // Helper to show error feedback briefly
+  function flashError(message) {
+    setError(message);
+    setTimeout(() => setError(''), 4500);
+  }
+
+  // Convert an uploaded image file to a base64 string for OCR
+  function convertImageToBase64(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result.split(',')[1]);
+      reader.onerror = () => reject(new Error('Failed to read image file'));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  // Submit the uploaded image to Claude's vision endpoint for OCR
   async function handleImageUpload(event) {
-    const file = event.target.files[0];
+    const file = event.target.files?.[0];
     if (!file || !file.type.startsWith('image/')) {
-      setError('Please select a valid image file');
+      flashError('Please select a valid image file');
       return;
     }
 
@@ -77,686 +163,465 @@ export default function SMSIncomeTracker() {
 
     try {
       const base64Image = await convertImageToBase64(file);
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
+      const response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
         headers: {
-          "Content-Type": "application/json",
+          'Content-Type': 'application/json',
+          'x-api-key': 'YOUR_CLAUDE_API_KEY', // Replace with a valid API key at runtime
         },
         body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
+          model: 'claude-3-sonnet-20240229',
           max_tokens: 1000,
           messages: [
             {
-              role: "user",
+              role: 'user',
               content: [
                 {
-                  type: "image",
-                  source: {
-                    type: "base64",
-                    media_type: file.type,
-                    data: base64Image
-                  }
+                  type: 'image',
+                  source: { type: 'base64', media_type: file.type, data: base64Image },
                 },
                 {
-                  type: "text",
-                  text: "Extract ALL text from this bank alert SMS screenshot. Return ONLY the raw text, exactly as it appears in the image, with no additional commentary or formatting."
-                }
-              ]
-            }
-          ]
-        })
+                  type: 'text',
+                  text: 'Extract ALL text from this bank alert SMS screenshot. Return ONLY the plain text with no commentary.',
+                },
+              ],
+            },
+          ],
+        }),
       });
 
       const data = await response.json();
-      const extractedText = data.content
-        .filter(block => block.type === "text")
-        .map(block => block.text)
-        .join("\n");
+      const extractedText = (data.content || [])
+        .filter((block) => block.type === 'text')
+        .map((block) => block.text)
+        .join('\n');
 
       setSmsText(extractedText);
-      setSuccess('Text extracted from image! Review and click "Add Transaction" to save.');
-      
+      flashSuccess('Text extracted from image. Review and add transaction.');
     } catch (err) {
-      setError('Failed to process image: ' + err.message);
+      flashError(`Failed to process image: ${err.message}`);
     } finally {
       setIsProcessingImage(false);
     }
   }
 
-  function convertImageToBase64(file) {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const base64String = reader.result.split(',')[1];
-        resolve(base64String);
-      };
-      reader.onerror = () => {
-        reject(new Error('Failed to read image file'));
-      };
-      reader.readAsDataURL(file);
-    });
+  // Determine if the SMS clearly marks the current user as the receiver
+  function isUserReceiver(text) {
+    if (!userName) return false;
+    const name = userName.trim().toLowerCase();
+    const patterns = [
+      new RegExp(`\\bto\\s+${name}\\b`, 'i'),
+      new RegExp(`\\bcredited\\s+to\\s+${name}\\b`, 'i'),
+      new RegExp(`\\bbeneficiary[:\\s]+${name}\\b`, 'i'),
+      new RegExp(`\\breceiver[:\\s]+${name}\\b`, 'i'),
+      new RegExp(`\\brecipient[:\\s]+${name}\\b`, 'i'),
+      new RegExp(`\\bpayment\\s+to\\s+${name}\\b`, 'i'),
+    ];
+    return patterns.some((pattern) => pattern.test(text));
   }
 
+  // Determine if the SMS shows the user as the sender (debit)
+  function isUserSender(text) {
+    if (!userName) return false;
+    const name = userName.trim().toLowerCase();
+    const patterns = [
+      new RegExp(`\\bfrom\\s+${name}\\b`, 'i'),
+      new RegExp(`\\bsender[:\\s]+${name}\\b`, 'i'),
+      new RegExp(`\\bby\\s+${name}\\b`, 'i'),
+      new RegExp(`\\btransfer\\s+from\\s+${name}\\b`, 'i'),
+    ];
+    return patterns.some((pattern) => pattern.test(text));
+  }
+
+  // Check debit keywords with high priority critical terms first
   function isDebitTransaction(text) {
-    const lowerText = text.toLowerCase();
-    const criticalDebitKeywords = ['debit', 'dr'];
-    
-    for (const keyword of criticalDebitKeywords) {
+    for (const keyword of CRITICAL_DEBIT_KEYWORDS) {
       const regex = new RegExp(`\\b${keyword}\\b`, 'i');
-      if (regex.test(text)) {
-        return true;
-      }
+      if (regex.test(text)) return true;
     }
-    
-    const debitKeywords = [
-      'debited', 'withdrawal', 'withdraw', 'transferred', 'transfer from your',
-      'payment to', 'paid to', 'sent to', 'deducted', 'charged', 'purchase',
-      'atm withdrawal', 'pos purchase', 'bill payment'
-    ];
-    
-    return debitKeywords.some(keyword => lowerText.includes(keyword));
+    const lower = text.toLowerCase();
+    return DEBIT_KEYWORDS.some((keyword) => lower.includes(keyword));
   }
 
+  // Confirm that the SMS looks like a credit alert
   function isCreditTransaction(text) {
-    const lowerText = text.toLowerCase();
-    const creditKeywords = [
-      'credited', 'credit', 'received', 'deposit', 'transfer from',
-      'payment from', 'salary', 'refund', 'reversal'
-    ];
-    
-    return creditKeywords.some(keyword => lowerText.includes(keyword));
+    const lower = text.toLowerCase();
+    return CREDIT_KEYWORDS.some((keyword) => lower.includes(keyword));
   }
 
+  // Parse the SMS into a transaction object
   function parseSMS(text) {
     const transaction = {
-      id: Date.now(),
-      date: new Date().toISOString().split('T')[0],
-      amount: 0,
-      description: '',
-      bank: '',
-      rawSMS: text
+      id: crypto.randomUUID(),
+      date: extractDate(text),
+      amount: extractAmount(text),
+      description: extractDescription(text),
+      bank: extractBank(text),
+      rawSMS: text,
     };
-
-    const amountPatterns = [
-      /(?:NGN|₦|N)\s*([0-9,]+\.?[0-9]*)/i,
-      /(?:USD|\$)\s*([0-9,]+\.?[0-9]*)/i,
-      /(?:credited|received|deposit).*?([0-9,]+\.?[0-9]*)/i
-    ];
-
-    for (const pattern of amountPatterns) {
-      const match = text.match(pattern);
-      if (match) {
-        transaction.amount = parseFloat(match[1].replace(/,/g, ''));
-        break;
-      }
-    }
-
-    const banks = ['GTBank', 'Access', 'Zenith', 'First Bank', 'UBA', 'Stanbic', 'Kuda'];
-    for (const bank of banks) {
-      if (text.toLowerCase().includes(bank.toLowerCase())) {
-        transaction.bank = bank;
-        break;
-      }
-    }
-
-    const descPatterns = [
-      /(?:from|narration:|desc:|description:)\s*([^\n.]+)/i,
-      /(?:transfer from|payment from)\s*([^\n.]+)/i
-    ];
-
-    for (const pattern of descPatterns) {
-      const match = text.match(pattern);
-      if (match) {
-        transaction.description = match[1].trim();
-        break;
-      }
-    }
-
-    if (!transaction.description) {
-      transaction.description = text.substring(0, 50) + '...';
-    }
-
     return transaction;
   }
 
-  async function handleAddTransaction() {
-    if (!smsText.trim()) {
-      setError('Please enter SMS text');
-      return;
-    }
-
-    // PRIORITY CHECK: First check if user is the receiver (overrides debit keywords)
-    const isUserReceiver = checkIfUserIsReceiver(smsText);
-    
-    // If user is confirmed as receiver, treat as credit regardless of debit keywords
-    if (isUserReceiver) {
-      processAsCredit();
-      return;
-    }
-
-    // Check if user is the sender (indicates debit)
-    const isUserSender = checkIfUserIsSender(smsText);
-    
-    // VALIDATION: Check if this is a debit transaction
-    if (isUserSender || isDebitTransaction(smsText)) {
-      setShowDebitPopup(true);
-      setError('🚫 DEBIT TRANSACTION DETECTED! This app only accepts credit/income alerts.');
-      setTimeout(() => {
-        setSmsText('');
-        setSelectedImage(null);
-        setError('');
-      }, 4000);
-      return;
-    }
-
-    // VALIDATION: Check if this is actually a credit transaction
-    if (!isCreditTransaction(smsText)) {
-      setError('⚠️ Unable to detect credit keywords. Please ensure this is an income/credit alert.');
-      return;
-    }
-
-    processAsCredit();
-  }
-
-  function processAsCredit() {
-    const newTransaction = parseSMS(smsText);
-
-    if (newTransaction.amount <= 0) {
-      setError('⚠️ Could not extract a valid amount from the SMS. Please check the format.');
-      return;
-    }
-
-    const updatedTransactions = [newTransaction, ...transactions];
-    setTransactions(updatedTransactions);
-    saveTransactions(updatedTransactions);
-
-    setSmsText('');
-    setSelectedImage(null);
-    setSuccess('✅ Income transaction added successfully!');
-    setTimeout(() => setSuccess(''), 3000);
-  }
-
-  function checkIfUserIsReceiver(text) {
-    if (!userName) return false;
-    
-    const creditPatterns = [
-      new RegExp(`\\bto\\s+${userName.toLowerCase()}\\b`, 'i'),
-      new RegExp(`\\breceiver[:\\s]+${userName.toLowerCase()}\\b`, 'i'),
-      new RegExp(`\\bbeneficiary[:\\s]+${userName.toLowerCase()}\\b`, 'i'),
-      new RegExp(`\\bcredited to\\s+${userName.toLowerCase()}\\b`, 'i'),
-      new RegExp(`\\brecipient[:\\s]+${userName.toLowerCase()}\\b`, 'i'),
-      new RegExp(`\\bpayment to\\s+${userName.toLowerCase()}\\b`, 'i')
+  // Extract the first monetary amount found in the SMS
+  function extractAmount(text) {
+    const patterns = [
+      /(?:NGN|₦|N)\s*([0-9,.]+)/i,
+      /credited\s+with\s+([0-9,.]+)/i,
+      /received\s+([0-9,.]+)/i,
     ];
-    
-    return creditPatterns.some(pattern => pattern.test(text));
-  }
-
-  function checkIfUserIsSender(text) {
-    if (!userName) return false;
-    
-    const debitPatterns = [
-      new RegExp(`\\bfrom\\s+${userName.toLowerCase()}\\b`, 'i'),
-      new RegExp(`\\bsender[:\\s]+${userName.toLowerCase()}\\b`, 'i'),
-      new RegExp(`\\bby\\s+${userName.toLowerCase()}\\b`, 'i'),
-      new RegExp(`\\btransfer from\\s+${userName.toLowerCase()}\\b`, 'i')
-    ];
-    
-    return debitPatterns.some(pattern => pattern.test(text));
-  }
-
-  async function handleDelete(id) {
-    const updatedTransactions = transactions.filter(t => t.id !== id);
-    setTransactions(updatedTransactions);
-    await saveTransactions(updatedTransactions);
-    setSuccess('Transaction deleted');
-    setTimeout(() => setSuccess(''), 3000);
-  }
-
-  function handleExport() {
-    let csv = 'Date,Amount,Description,Bank\n';
-    transactions.forEach(t => {
-      csv += `${t.date},${t.amount},"${t.description}",${t.bank}\n`;
-    });
-
-    const blob = new Blob([csv], { type: 'text/csv' });
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `income-transactions-${Date.now()}.csv`;
-    a.click();
-    window.URL.revokeObjectURL(url);
-  }
-
-  function calculateTax(income) {
-    const brackets = [
-      { limit: 800000, rate: 0 },
-      { limit: 3000000, rate: 0.15 },
-      { limit: 12000000, rate: 0.18 },
-      { limit: 25000000, rate: 0.21 },
-      { limit: 50000000, rate: 0.23 },
-      { limit: Infinity, rate: 0.25 }
-    ];
-
-    let tax = 0;
-    let previousLimit = 0;
-
-    for (let i = 0; i < brackets.length; i++) {
-      const bracket = brackets[i];
-      if (income <= bracket.limit) {
-        const taxableInThisBracket = income - previousLimit;
-        tax += taxableInThisBracket * bracket.rate;
-        break;
-      } else {
-        const taxableInThisBracket = bracket.limit - previousLimit;
-        tax += taxableInThisBracket * bracket.rate;
-        previousLimit = bracket.limit;
+    for (const pattern of patterns) {
+      const match = text.match(pattern);
+      if (match?.[1]) {
+        return parseFloat(match[1].replace(/,/g, '')) || 0;
       }
     }
+    return 0;
+  }
 
+  // Try to extract a date from the SMS, otherwise use today
+  function extractDate(text) {
+    const match = text.match(/(\d{4}-\d{2}-\d{2}|\d{2}\/\d{2}\/\d{4}|\d{2}-\d{2}-\d{4})/);
+    if (match?.[1]) {
+      return match[1].replace(/\//g, '-');
+    }
+    return new Date().toISOString().split('T')[0];
+  }
+
+  // Pull a short description or fallback to SMS snippet
+  function extractDescription(text) {
+    const descMatch = text.match(/(?:from|narration|desc|description)[:\s]+([^\.\n]+)/i);
+    if (descMatch?.[1]) {
+      return descMatch[1].trim();
+    }
+    return text.slice(0, 60).trim() + (text.length > 60 ? '...' : '');
+  }
+
+  // Identify the sending bank if present
+  function extractBank(text) {
+    for (const bank of BANK_NAMES) {
+      if (text.toLowerCase().includes(bank.toLowerCase())) {
+        return bank;
+      }
+    }
+    return 'Unknown';
+  }
+
+  // Handle add transaction click with all validation rules
+  async function handleAddTransaction() {
+    if (!smsText.trim()) {
+      flashError('Please enter SMS text or use OCR.');
+      return;
+    }
+
+    if (isUserReceiver(smsText)) {
+      acceptCredit();
+      return;
+    }
+
+    if (isUserSender(smsText) || isDebitTransaction(smsText)) {
+      setShowDebitPopup(true);
+      flashError('Debit detected! Only credit income alerts are accepted.');
+      return;
+    }
+
+    if (!isCreditTransaction(smsText)) {
+      flashError('Unable to confirm this is a credit alert.');
+      return;
+    }
+
+    acceptCredit();
+  }
+
+  // Persist a parsed credit transaction
+  async function acceptCredit() {
+    const newTransaction = parseSMS(smsText);
+    if (newTransaction.amount <= 0) {
+      flashError('Could not extract a valid amount from the SMS.');
+      return;
+    }
+    const next = [newTransaction, ...transactions];
+    setTransactions(next);
+    await persistTransactions(next);
+    setSmsText('');
+    setSelectedImage(null);
+    flashSuccess('Income transaction added successfully');
+  }
+
+  // Delete a transaction by id
+  async function handleDelete(id) {
+    const next = transactions.filter((t) => t.id !== id);
+    setTransactions(next);
+    await persistTransactions(next);
+    flashSuccess('Transaction deleted');
+  }
+
+  // Export transactions as a CSV file
+  function handleExport() {
+    const header = 'Date,Amount,Description,Bank\n';
+    const rows = transactions
+      .map((t) => `${t.date},${t.amount},"${t.description.replace(/"/g, '""')}",${t.bank}`)
+      .join('\n');
+    const csv = header + rows;
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `income-transactions-${Date.now()}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
+  // Calculate annual tax based on total income using progressive brackets
+  function calculateTax(income) {
+    let tax = 0;
+    let previousLimit = 0;
+    for (const bracket of TAX_BRACKETS) {
+      if (income <= bracket.limit) {
+        tax += (income - previousLimit) * bracket.rate;
+        break;
+      }
+      tax += (bracket.limit - previousLimit) * bracket.rate;
+      previousLimit = bracket.limit;
+    }
     return tax;
   }
 
-  const totalIncome = transactions.reduce((sum, t) => sum + t.amount, 0);
-  const annualTax = calculateTax(totalIncome);
-  const netIncome = totalIncome - annualTax;
-  const effectiveRate = totalIncome > 0 ? (annualTax / totalIncome) * 100 : 0;
+  // Memoize summary values for rendering efficiency
+  const totalIncome = useMemo(() => transactions.reduce((sum, t) => sum + t.amount, 0), [transactions]);
+  const annualTax = useMemo(() => calculateTax(totalIncome), [totalIncome]);
+  const netIncome = useMemo(() => totalIncome - annualTax, [totalIncome, annualTax]);
+  const effectiveRate = useMemo(() => (totalIncome > 0 ? (annualTax / totalIncome) * 100 : 0), [totalIncome, annualTax]);
 
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center min-h-screen bg-gray-50">
-        <div className="text-lg">Loading...</div>
-      </div>
-    );
-  }
+  // Build per-bracket breakdown for UI display
+  const taxBreakdown = useMemo(() => {
+    let remaining = totalIncome;
+    let previousLimit = 0;
+    return TAX_BRACKETS.map((bracket) => {
+      const bracketCap = bracket.limit === Infinity ? remaining : Math.max(Math.min(bracket.limit - previousLimit, remaining), 0);
+      const taxable = Math.max(Math.min(remaining, bracketCap), 0);
+      remaining -= taxable;
+      previousLimit = bracket.limit;
+      return {
+        ...bracket,
+        taxable,
+        tax: taxable * bracket.rate,
+      };
+    });
+  }, [totalIncome]);
 
   return (
-    <div className="min-h-screen relative p-4 md:p-8">
-      {/* Background Image with Overlay */}
-      <div 
-        className="fixed inset-0 z-0"
-        style={{
-          backgroundImage: 'url(https://images.unsplash.com/photo-1579621970563-ebec7560ff3e?w=1200&q=80)',
-          backgroundSize: 'cover',
-          backgroundPosition: 'center',
-          backgroundAttachment: 'fixed'
-        }}
-      >
-        <div className="absolute inset-0 bg-gradient-to-br from-blue-900/70 via-purple-900/60 to-green-900/70 backdrop-blur-sm"></div>
-      </div>
+    <div className="min-h-screen bg-slate-950 text-white p-4 md:p-8 relative overflow-hidden">
+      {/* Decorative gradient background overlay */}
+      <div className="absolute inset-0 bg-gradient-to-br from-emerald-600/20 via-blue-600/10 to-indigo-700/30 pointer-events-none" />
 
-      {/* Content Container */}
-      <div className="relative z-10">
-      {showDebitPopup && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-8 animate-bounce">
-            <div className="flex justify-center mb-4">
-              <div className="bg-red-100 rounded-full p-4">
-                <svg className="w-16 h-16 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                </svg>
-              </div>
-            </div>
-            <h2 className="text-2xl font-bold text-center text-red-600 mb-3">
-              ⛔ DEBIT TRANSACTION DETECTED
-            </h2>
-            <p className="text-center text-gray-700 mb-2">
-              This appears to be a <span className="font-bold text-red-600">debit/withdrawal</span> alert.
-            </p>
-            <p className="text-center text-gray-600 mb-6 text-sm">
-              This app only tracks <span className="font-semibold text-green-600">income (credit)</span> transactions for tax purposes.
-            </p>
-            <button
-              onClick={() => setShowDebitPopup(false)}
-              className="w-full bg-red-600 text-white py-3 rounded-xl hover:bg-red-700 font-semibold transition-colors"
-            >
-              Close
-            </button>
-          </div>
-        </div>
-      )}
-
-      <div className="max-w-7xl mx-auto">
-        <div className="bg-gradient-to-r from-blue-600 to-blue-700 rounded-3xl shadow-2xl p-8 mb-8 text-white backdrop-blur-sm bg-opacity-95">
-          <div className="flex justify-between items-start">
+      <div className="relative max-w-6xl mx-auto space-y-6">
+        {/* Header with profile controls */}
+        <div className="bg-white/10 backdrop-blur-xl rounded-3xl border border-white/10 p-6 shadow-2xl">
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
             <div>
-              <h1 className="text-4xl font-bold mb-2">💰 Income Tax Tracker</h1>
-              <p className="text-blue-100 text-lg">Track your income and calculate tax automatically from bank SMS alerts</p>
+              <p className="text-sm text-emerald-200 uppercase tracking-[0.2em]">Income Tax Tracker</p>
+              <h1 className="text-3xl font-bold">Track credits. Reject debits. Stay tax-ready.</h1>
+              <p className="text-slate-200 mt-1">Paste SMS text or upload screenshots to capture income instantly.</p>
             </div>
-            <div className="text-right">
+            <div className="bg-white/10 rounded-2xl p-4 border border-white/10 w-full md:w-auto">
               {userName ? (
-                <div>
-                  <p className="text-sm text-blue-200">Tracking alerts for:</p>
-                  <p className="text-xl font-bold">{userName}</p>
+                <div className="text-right">
+                  <p className="text-xs text-slate-200">Tracking for</p>
+                  <p className="text-lg font-semibold">{userName}</p>
                   <button
-                    onClick={() => {
-                      setShowNameInput(true);
-                      setTempName(userName);
-                    }}
-                    className="text-sm text-blue-200 hover:text-white underline mt-1"
+                    onClick={() => setShowNameInput(true)}
+                    className="text-emerald-200 hover:text-white text-sm underline"
                   >
-                    Edit Name
+                    Edit name
                   </button>
                 </div>
               ) : (
                 <button
                   onClick={() => setShowNameInput(true)}
-                  className="bg-white bg-opacity-20 hover:bg-opacity-30 px-4 py-2 rounded-xl text-sm font-semibold transition-all"
+                  className="px-4 py-2 bg-gradient-to-r from-emerald-500 to-blue-500 rounded-xl font-semibold text-white"
                 >
-                  + Add Your Name
+                  + Add your name
                 </button>
               )}
             </div>
           </div>
         </div>
 
-        {/* Name Input Modal */}
-        {showNameInput && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-            <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-8">
-              <h2 className="text-2xl font-bold text-gray-800 mb-2">Enter Your Name</h2>
-              <p className="text-gray-600 text-sm mb-4">
-                We'll use your name to better detect if you're sending (debit) or receiving (credit) money in SMS alerts.
-              </p>
-              
-              <label className="block text-sm font-semibold text-gray-700 mb-2">
-                Full Name (as it appears in bank alerts)
-              </label>
-              <input
-                type="text"
-                value={tempName}
-                onChange={(e) => setTempName(e.target.value)}
-                placeholder="e.g., John Doe"
-                className="w-full p-3 border-2 border-gray-200 rounded-xl mb-4 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-              />
-              
-              <div className="flex gap-3">
-                <button
-                  onClick={() => {
-                    setShowNameInput(false);
-                    setTempName(userName);
-                  }}
-                  className="flex-1 bg-gray-200 text-gray-700 px-4 py-3 rounded-xl hover:bg-gray-300 font-semibold transition-colors"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={saveUserName}
-                  disabled={!tempName.trim()}
-                  className="flex-1 bg-gradient-to-r from-blue-600 to-blue-700 text-white px-4 py-3 rounded-xl hover:from-blue-700 hover:to-blue-800 disabled:from-gray-300 disabled:to-gray-400 font-semibold transition-colors"
-                >
-                  Save Name
-                </button>
-              </div>
-            </div>
+        {/* Feedback banners */}
+        {error && (
+          <div className="bg-red-500/20 border border-red-400/30 text-red-100 p-4 rounded-2xl">
+            {error}
+          </div>
+        )}
+        {success && (
+          <div className="bg-emerald-500/20 border border-emerald-400/30 text-emerald-100 p-4 rounded-2xl">
+            {success}
           </div>
         )}
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
-          <div className="lg:col-span-2 space-y-6">
-            <div className="bg-white/95 backdrop-blur-md rounded-2xl shadow-2xl p-6">
-              <h2 className="text-xl font-bold text-gray-800 mb-4 flex items-center gap-2">
-                <span className="bg-blue-100 p-2 rounded-lg">📝</span>
-                Add Transaction
-              </h2>
-
-              <div className="mb-6 p-6 bg-gradient-to-br from-blue-50 to-indigo-50 rounded-2xl border-2 border-dashed border-blue-200 hover:border-blue-400 transition-colors">
-                <div className="flex items-center justify-center flex-col">
-                  <div className="bg-white rounded-full p-4 shadow-md mb-3">
-                    <Upload className="text-blue-600" size={32} />
-                  </div>
-                  <label className="cursor-pointer">
-                    <span className="bg-gradient-to-r from-blue-600 to-blue-700 text-white px-6 py-3 rounded-xl hover:from-blue-700 hover:to-blue-800 inline-flex items-center gap-2 font-semibold shadow-md transition-all">
-                      <Image size={20} />
-                      Upload Screenshot
-                    </span>
-                    <input
-                      type="file"
-                      accept="image/*"
-                      onChange={handleImageUpload}
-                      className="hidden"
-                      capture="environment"
-                    />
-                  </label>
-                  <p className="text-sm text-gray-600 mt-3 text-center">
-                    Take a photo or upload a screenshot of your bank alert
-                  </p>
-                </div>
-
-                {selectedImage && (
-                  <div className="mt-4">
-                    <p className="text-sm text-gray-600 mb-2 font-medium">Selected Image:</p>
-                    <img 
-                      src={selectedImage} 
-                      alt="Bank alert screenshot" 
-                      className="max-w-full h-auto max-h-64 mx-auto rounded-xl border-2 border-blue-200 shadow-md"
-                    />
-                  </div>
-                )}
-
-                {isProcessingImage && (
-                  <div className="mt-4 text-center">
-                    <div className="inline-block animate-spin rounded-full h-10 w-10 border-4 border-blue-200 border-t-blue-600"></div>
-                    <p className="text-sm text-gray-600 mt-3 font-medium">Processing image...</p>
-                  </div>
-                )}
+        {/* Main layout grid */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div className="lg:col-span-2 space-y-4">
+            <div className="bg-white/10 backdrop-blur-xl border border-white/10 rounded-3xl p-6 shadow-xl space-y-4">
+              <div className="flex items-center gap-3">
+                <span className="bg-emerald-500/20 text-emerald-200 p-2 rounded-xl">📝</span>
+                <h2 className="text-xl font-semibold">Add transaction</h2>
               </div>
 
-              <div className="relative mb-6">
-                <div className="absolute inset-0 flex items-center">
-                  <div className="w-full border-t border-gray-300"></div>
-                </div>
-                <div className="relative flex justify-center text-sm">
-                  <span className="px-4 bg-white text-gray-500 font-medium">OR paste text manually</span>
+              <div className="grid md:grid-cols-2 gap-4">
+                <label className="relative flex flex-col items-center justify-center gap-3 p-6 border-2 border-dashed border-emerald-300/40 rounded-2xl bg-white/5 hover:border-emerald-300/70 transition-colors cursor-pointer">
+                  <div className="bg-white/10 rounded-full p-3">
+                    <Upload className="text-emerald-200" />
+                  </div>
+                  <div className="text-center">
+                    <p className="font-semibold">Upload bank SMS screenshot</p>
+                    <p className="text-sm text-slate-200">We will OCR with Claude for you</p>
+                  </div>
+                  <input type="file" accept="image/*" className="absolute inset-0 opacity-0 cursor-pointer" onChange={handleImageUpload} />
+                </label>
+
+                <div className="bg-white/5 border border-white/10 rounded-2xl p-4 space-y-3">
+                  <div className="flex items-center gap-2 text-sm text-slate-200">
+                    <ImageIcon size={18} />
+                    <span>{selectedImage ? 'Preview selected' : 'No image selected'}</span>
+                  </div>
+                  {selectedImage ? (
+                    <img src={selectedImage} alt="SMS preview" className="w-full h-40 object-cover rounded-xl border border-white/10" />
+                  ) : (
+                    <div className="w-full h-40 bg-slate-900/60 rounded-xl border border-white/5 flex items-center justify-center text-slate-500">
+                      Upload an image to preview
+                    </div>
+                  )}
+                  {isProcessingImage && <p className="text-xs text-amber-200">Processing image with Claude...</p>}
                 </div>
               </div>
 
-              <label className="block text-sm font-semibold text-gray-700 mb-2">
-                Bank SMS Alert (Credit/Income Only)
-              </label>
-              <p className="text-xs text-blue-600 mb-3 bg-blue-50 p-2 rounded-lg">
-                ℹ️ Only credit alerts (income) will be accepted. Debit alerts will be rejected.
-              </p>
-              
-              <textarea
-                value={smsText}
-                onChange={(e) => setSmsText(e.target.value)}
-                placeholder="Example: Your acct 0123456789 has been credited with NGN 50,000.00 from JOHN DOE"
-                className="w-full p-4 border-2 border-gray-200 rounded-xl mb-4 h-28 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all"
-              />
-              
-              <button
-                onClick={handleAddTransaction}
-                className="w-full bg-gradient-to-r from-green-600 to-green-700 text-white px-6 py-3 rounded-xl hover:from-green-700 hover:to-green-800 flex items-center justify-center gap-2 font-semibold shadow-lg transition-all"
-              >
-                <Plus size={22} />
-                Add Transaction
-              </button>
+              <div className="space-y-2">
+                <p className="text-sm text-slate-200">Paste SMS text</p>
+                <textarea
+                  value={smsText}
+                  onChange={(e) => setSmsText(e.target.value)}
+                  rows={5}
+                  className="w-full p-4 rounded-2xl bg-slate-900/70 border border-white/10 focus:border-emerald-400 focus:ring-2 focus:ring-emerald-400/40 outline-none"
+                  placeholder="Paste the bank SMS text here..."
+                />
+              </div>
 
-              {error && (
-                <div className="mt-4 p-4 bg-red-50 text-red-700 rounded-xl border border-red-200">
-                  {error}
-                </div>
-              )}
-
-              {success && (
-                <div className="mt-4 p-4 bg-green-50 text-green-700 rounded-xl border border-green-200">
-                  {success}
-                </div>
-              )}
+              <div className="flex flex-col md:flex-row gap-3 md:items-center md:justify-between">
+                <p className="text-xs text-slate-300">
+                  Debit keywords like "debit" / "DR" will be blocked unless your name is detected as the receiver.
+                </p>
+                <button
+                  onClick={handleAddTransaction}
+                  className="px-5 py-3 bg-gradient-to-r from-emerald-500 to-blue-500 rounded-xl font-semibold shadow-lg hover:translate-y-[-1px] transition"
+                >
+                  Add transaction
+                </button>
+              </div>
             </div>
 
-            {totalIncome > 0 && (
-              <div className="bg-white/95 backdrop-blur-md rounded-2xl shadow-2xl p-6">
-                <h3 className="text-xl font-bold text-gray-800 mb-4 flex items-center gap-2">
-                  <span className="bg-purple-100 p-2 rounded-lg">📊</span>
-                  Tax Breakdown
-                </h3>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
-                  <div className="flex justify-between p-3 bg-gray-50 rounded-xl">
-                    <span className="text-gray-600 font-medium">First ₦800K @ 0%:</span>
-                    <span className="font-bold text-gray-800">₦0.00</span>
-                  </div>
-                  {totalIncome > 800000 && (
-                    <div className="flex justify-between p-3 bg-orange-50 rounded-xl">
-                      <span className="text-gray-600 font-medium">Next ₦2.2M @ 15%:</span>
-                      <span className="font-bold text-orange-700">
-                        ₦{(Math.min(totalIncome - 800000, 2200000) * 0.15).toLocaleString('en-NG', { minimumFractionDigits: 2 })}
-                      </span>
-                    </div>
-                  )}
-                  {totalIncome > 3000000 && (
-                    <div className="flex justify-between p-3 bg-yellow-50 rounded-xl">
-                      <span className="text-gray-600 font-medium">Next ₦9M @ 18%:</span>
-                      <span className="font-bold text-yellow-700">
-                        ₦{(Math.min(totalIncome - 3000000, 9000000) * 0.18).toLocaleString('en-NG', { minimumFractionDigits: 2 })}
-                      </span>
-                    </div>
-                  )}
-                  {totalIncome > 12000000 && (
-                    <div className="flex justify-between p-3 bg-red-50 rounded-xl">
-                      <span className="text-gray-600 font-medium">Next ₦13M @ 21%:</span>
-                      <span className="font-bold text-red-700">
-                        ₦{(Math.min(totalIncome - 12000000, 13000000) * 0.21).toLocaleString('en-NG', { minimumFractionDigits: 2 })}
-                      </span>
-                    </div>
-                  )}
-                  {totalIncome > 25000000 && (
-                    <div className="flex justify-between p-3 bg-purple-50 rounded-xl">
-                      <span className="text-gray-600 font-medium">Next ₦25M @ 23%:</span>
-                      <span className="font-bold text-purple-700">
-                        ₦{(Math.min(totalIncome - 25000000, 25000000) * 0.23).toLocaleString('en-NG', { minimumFractionDigits: 2 })}
-                      </span>
-                    </div>
-                  )}
-                  {totalIncome > 50000000 && (
-                    <div className="flex justify-between p-3 bg-pink-50 rounded-xl">
-                      <span className="text-gray-600 font-medium">Above ₦50M @ 25%:</span>
-                      <span className="font-bold text-pink-700">
-                        ₦{((totalIncome - 50000000) * 0.25).toLocaleString('en-NG', { minimumFractionDigits: 2 })}
-                      </span>
-                    </div>
-                  )}
-                </div>
+            <div className="bg-white/10 backdrop-blur-xl border border-white/10 rounded-3xl p-6 shadow-xl">
+              <div className="flex items-center gap-3 mb-4">
+                <span className="bg-blue-500/20 text-blue-100 p-2 rounded-xl">📊</span>
+                <h3 className="text-lg font-semibold">Tax breakdown</h3>
               </div>
-            )}
+              <div className="space-y-3">
+                {taxBreakdown.map((bracket, index) => (
+                  <div key={index} className="bg-white/5 rounded-2xl p-4 border border-white/5 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                    <div>
+                      <p className="text-sm text-slate-200">
+                        {index === 0 ? '₦0 - ₦800,000' : `Above ₦${(TAX_BRACKETS[index - 1].limit).toLocaleString()} to ₦${bracket.limit === Infinity ? '∞' : bracket.limit.toLocaleString()}`}
+                      </p>
+                      <p className="text-xl font-bold">{(bracket.rate * 100).toFixed(0)}%</p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-sm text-slate-300">Taxable: ₦{bracket.taxable.toLocaleString('en-NG', { minimumFractionDigits: 2 })}</p>
+                      <p className="text-sm text-emerald-200 font-semibold">Tax: ₦{bracket.tax.toLocaleString('en-NG', { minimumFractionDigits: 2 })}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
 
-          <div className="space-y-6">
-            <div className="bg-gradient-to-br from-green-500 to-green-600 rounded-2xl shadow-2xl p-6 text-white">
+          {/* Summary column */}
+          <div className="space-y-4">
+            <div className="bg-gradient-to-br from-emerald-500 to-blue-600 rounded-3xl p-6 shadow-2xl text-white">
               <div className="flex items-center gap-3 mb-2">
-                <span className="bg-white bg-opacity-20 p-2 rounded-lg">💵</span>
-                <p className="text-sm font-medium text-green-100">Total Income</p>
+                <span className="bg-white/20 p-2 rounded-xl">💵</span>
+                <p className="text-sm uppercase tracking-wide">Total income</p>
               </div>
-              <p className="text-3xl font-bold mb-2">
-                ₦{totalIncome.toLocaleString('en-NG', { minimumFractionDigits: 2 })}
-              </p>
-              <p className="text-sm text-green-100">
-                {transactions.length} transaction{transactions.length !== 1 ? 's' : ''}
-              </p>
+              <p className="text-4xl font-bold">₦{totalIncome.toLocaleString('en-NG', { minimumFractionDigits: 2 })}</p>
+              <p className="text-sm text-emerald-100">Across {transactions.length} transaction(s)</p>
             </div>
 
-            <div className="bg-gradient-to-br from-red-500 to-red-600 rounded-2xl shadow-2xl p-6 text-white">
+            <div className="bg-gradient-to-br from-red-500 to-orange-600 rounded-3xl p-6 shadow-2xl text-white">
               <div className="flex items-center gap-3 mb-2">
-                <span className="bg-white bg-opacity-20 p-2 rounded-lg">🏛️</span>
-                <p className="text-sm font-medium text-red-100">Annual Tax</p>
+                <span className="bg-white/20 p-2 rounded-xl">🏛️</span>
+                <p className="text-sm uppercase tracking-wide">Annual tax</p>
               </div>
-              <p className="text-3xl font-bold mb-2">
-                ₦{annualTax.toLocaleString('en-NG', { minimumFractionDigits: 2 })}
-              </p>
-              <p className="text-sm text-red-100">
-                {effectiveRate.toFixed(2)}% effective rate
-              </p>
+              <p className="text-4xl font-bold">₦{annualTax.toLocaleString('en-NG', { minimumFractionDigits: 2 })}</p>
+              <p className="text-sm text-orange-100">Effective rate: {effectiveRate.toFixed(2)}%</p>
             </div>
 
-            <div className="bg-gradient-to-br from-blue-500 to-blue-600 rounded-2xl shadow-2xl p-6 text-white">
+            <div className="bg-gradient-to-br from-indigo-500 to-purple-600 rounded-3xl p-6 shadow-2xl text-white">
               <div className="flex items-center gap-3 mb-2">
-                <span className="bg-white bg-opacity-20 p-2 rounded-lg">💎</span>
-                <p className="text-sm font-medium text-blue-100">Net Income</p>
+                <span className="bg-white/20 p-2 rounded-xl">💎</span>
+                <p className="text-sm uppercase tracking-wide">Net income</p>
               </div>
-              <p className="text-3xl font-bold mb-2">
-                ₦{netIncome.toLocaleString('en-NG', { minimumFractionDigits: 2 })}
-              </p>
-              <p className="text-sm text-blue-100">After tax deduction</p>
-            </div>
-
-            <div className="bg-gradient-to-br from-purple-500 to-purple-600 rounded-2xl shadow-2xl p-6 text-white">
-              <div className="flex items-center gap-3 mb-2">
-                <span className="bg-white bg-opacity-20 p-2 rounded-lg">📅</span>
-                <p className="text-sm font-medium text-purple-100">Monthly Average</p>
-              </div>
-              <p className="text-3xl font-bold mb-2">
-                ₦{(totalIncome / 12).toLocaleString('en-NG', { minimumFractionDigits: 2 })}
-              </p>
-              <p className="text-sm text-purple-100">Before tax</p>
+              <p className="text-4xl font-bold">₦{netIncome.toLocaleString('en-NG', { minimumFractionDigits: 2 })}</p>
+              <p className="text-sm text-purple-100">Monthly average: ₦{(totalIncome / 12).toLocaleString('en-NG', { minimumFractionDigits: 2 })}</p>
             </div>
 
             <button
               onClick={handleExport}
-              disabled={transactions.length === 0}
-              className="w-full bg-gradient-to-r from-teal-500 to-teal-600 text-white p-6 rounded-2xl hover:from-teal-600 hover:to-teal-700 disabled:from-gray-300 disabled:to-gray-400 disabled:cursor-not-allowed shadow-2xl transition-all"
+              disabled={!transactions.length}
+              className="w-full bg-white/10 border border-white/20 text-white py-4 rounded-2xl font-semibold flex items-center justify-center gap-3 hover:bg-white/20 disabled:opacity-50"
             >
-              <div className="flex items-center justify-center gap-3">
-                <Download size={24} />
-                <span className="font-bold text-lg">Export CSV</span>
-              </div>
+              <Download />
+              Export CSV
             </button>
           </div>
         </div>
 
-        <div className="bg-white/95 backdrop-blur-md rounded-2xl shadow-2xl overflow-hidden">
-          <div className="p-6 bg-gradient-to-r from-gray-50 to-gray-100 border-b">
-            <h3 className="text-xl font-bold text-gray-800 flex items-center gap-2">
-              <span className="bg-blue-100 p-2 rounded-lg">📋</span>
-              Transaction History
-            </h3>
+        {/* Transaction history */}
+        <div className="bg-white/10 backdrop-blur-xl border border-white/10 rounded-3xl p-6 shadow-xl">
+          <div className="flex items-center gap-3 mb-4">
+            <span className="bg-blue-500/20 text-blue-100 p-2 rounded-xl">📋</span>
+            <h3 className="text-lg font-semibold">Transaction history</h3>
           </div>
+
           <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead className="bg-gray-50">
+            <table className="w-full text-left text-slate-100">
+              <thead className="text-xs uppercase tracking-wide text-slate-300">
                 <tr>
-                  <th className="px-6 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wider">Date</th>
-                  <th className="px-6 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wider">Amount</th>
-                  <th className="px-6 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wider">Description</th>
-                  <th className="px-6 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wider">Bank</th>
-                  <th className="px-6 py-4 text-left text-xs font-bold text-gray-700 uppercase tracking-wider">Actions</th>
+                  <th className="py-3 px-2">Date</th>
+                  <th className="py-3 px-2">Amount</th>
+                  <th className="py-3 px-2">Description</th>
+                  <th className="py-3 px-2">Bank</th>
+                  <th className="py-3 px-2 text-center">Actions</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-gray-200">
+              <tbody className="divide-y divide-white/10">
                 {transactions.length === 0 ? (
                   <tr>
-                    <td colSpan="5" className="px-6 py-12 text-center">
-                      <div className="flex flex-col items-center gap-3">
-                        <div className="bg-gray-100 rounded-full p-4">
-                          <svg className="w-12 h-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
-                          </svg>
-                        </div>
-                        <p className="text-gray-500 font-medium">No transactions yet</p>
-                        <p className="text-sm text-gray-400">Upload a screenshot or paste a bank SMS alert</p>
-                      </div>
+                    <td colSpan={5} className="py-10 text-center text-slate-300">
+                      No transactions yet. Upload a screenshot or paste SMS text to begin.
                     </td>
                   </tr>
                 ) : (
-                  transactions.map((transaction) => (
-                    <tr key={transaction.id} className="hover:bg-gray-50 transition-colors">
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 font-medium">
-                        {transaction.date}
+                  transactions.map((t) => (
+                    <tr key={t.id} className="hover:bg-white/5">
+                      <td className="py-3 px-2 whitespace-nowrap">{t.date}</td>
+                      <td className="py-3 px-2 font-semibold text-emerald-200">₦{t.amount.toLocaleString('en-NG', { minimumFractionDigits: 2 })}</td>
+                      <td className="py-3 px-2">{t.description}</td>
+                      <td className="py-3 px-2">
+                        <span className="px-3 py-1 rounded-full bg-white/10 border border-white/10 text-sm">{t.bank}</span>
                       </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-green-600">
-                        ₦{transaction.amount.toLocaleString('en-NG', { minimumFractionDigits: 2 })}
-                      </td>
-                      <td className="px-6 py-4 text-sm text-gray-700">
-                        {transaction.description}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm">
-                        <span className="bg-blue-100 text-blue-800 px-3 py-1 rounded-full font-medium text-xs">
-                          {transaction.bank || 'Unknown'}
-                        </span>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm">
+                      <td className="py-3 px-2 text-center">
                         <button
-                          onClick={() => handleDelete(transaction.id)}
-                          className="text-red-600 hover:text-red-800 hover:bg-red-50 p-2 rounded-lg transition-colors"
+                          onClick={() => handleDelete(t.id)}
+                          className="text-red-200 hover:text-white hover:bg-red-500/20 p-2 rounded-lg"
                           title="Delete transaction"
                         >
                           <Trash2 size={18} />
@@ -770,7 +635,56 @@ export default function SMSIncomeTracker() {
           </div>
         </div>
       </div>
-      </div>
+
+      {/* User name modal */}
+      {showNameInput && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-slate-900 rounded-3xl border border-white/10 p-6 w-full max-w-md space-y-4">
+            <h3 className="text-xl font-semibold">Set your profile name</h3>
+            <p className="text-slate-300 text-sm">
+              Your name lets the detector bypass debit keywords when you are the receiver in the SMS.
+            </p>
+            <input
+              type="text"
+              value={tempName}
+              onChange={(e) => setTempName(e.target.value)}
+              placeholder="Enter full name as seen in alerts"
+              className="w-full p-3 rounded-2xl bg-slate-800 border border-white/10 focus:border-emerald-400 focus:ring-2 focus:ring-emerald-400/30 outline-none"
+            />
+            <div className="flex gap-3 justify-end">
+              <button onClick={() => setShowNameInput(false)} className="px-4 py-2 rounded-xl bg-white/10 border border-white/20">Cancel</button>
+              <button
+                onClick={saveUserName}
+                disabled={!tempName.trim()}
+                className="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-blue-500 font-semibold disabled:opacity-50"
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Debit detection modal */}
+      {showDebitPopup && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-red-900 rounded-3xl border border-red-300/40 p-6 w-full max-w-md space-y-3 text-white shadow-2xl">
+            <div className="flex items-center gap-3">
+              <div className="bg-white/20 rounded-full p-3">⚠️</div>
+              <h3 className="text-xl font-bold">Debit transaction detected</h3>
+            </div>
+            <p className="text-sm text-red-100">
+              This SMS includes debit language. Credits are accepted only when your name appears as the receiver.
+            </p>
+            <button
+              onClick={() => setShowDebitPopup(false)}
+              className="w-full bg-white/20 hover:bg-white/30 text-white py-3 rounded-xl font-semibold"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
